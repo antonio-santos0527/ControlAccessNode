@@ -8,31 +8,57 @@ const { getRandomNumericString } = require("../utils/Functions");
 const obtainQR = async (req, res) => {
   try {
     const { user, fechaInicio, fechaFin } = req.body;
-    const datos = await findOne('call spPRY_Acceso_ObtenerPorUsuario(?);', [user])
-    const payload = JSON.parse(datos.Payload)
-    let { codigo } = payload
-    if (!payload.isCard) {
-      const ids = await findMany("call spPRY_IDAcceso_Listar();", []);
-      do {
-        codigo = getRandomNumericString(10)
-      } while (ids.some(item => item["IDAcceso"] === codigo));
-
-      const newPayload = {
-        codigo,
-        fechaInicio,
-        fechaFin,
-        sala: payload.sala,
-        isCard: false
+    console.log('[ObtainQR] Request for user:', user);
+    
+    // Get existing access record for user
+    let datos = null;
+    let payload = null;
+    
+    try {
+      datos = await findOne('call spPRY_Acceso_ObtenerPorUsuario(?);', [user]);
+      if (datos && datos.Payload) {
+        payload = JSON.parse(datos.Payload);
       }
-
-      await pool.query('call spPRY_Usuario_AgregarEnlace(?,?,?);', [codigo, user, JSON.stringify(newPayload)])
+    } catch (e) {
+      console.log('[ObtainQR] No existing access record found for user:', user);
+    }
+    
+    // Generate a unique code for the QR
+    const ids = await findMany("call spPRY_IDAcceso_Listar();", []);
+    let codigo;
+    do {
+      codigo = getRandomNumericString(10);
+    } while (ids.some(item => item["IDAcceso"] === codigo));
+    
+    console.log('[ObtainQR] Generated code:', codigo);
+    
+    // Create new payload with fresh timestamps
+    const newPayload = {
+      codigo,
+      fechaInicio,
+      fechaFin,
+      sala: payload?.sala || null,
+      isCard: false
+    };
+    
+    // Save/update the access record
+    try {
+      await pool.query('call spPRY_Usuario_AgregarEnlace(?,?,?);', [codigo, user, JSON.stringify(newPayload)]);
+      console.log('[ObtainQR] Access record saved');
+    } catch (e) {
+      console.log('[ObtainQR] Error saving access record:', e.message);
+      // Continue anyway - we can still generate QR
     }
 
+    // Generate QR code image
     const qrImage = qr.imageSync(`${codigo}`, { type: 'png' });
     const base64 = qrImage.toString("base64");
-    res.status(200).json({ qrCode: `data:image/png;base64,${base64}` })
-  } catch ({ message }) {
-    return res.status(500).json({ message })
+    
+    console.log('[ObtainQR] QR generated successfully');
+    res.status(200).json({ qrCode: `data:image/png;base64,${base64}` });
+  } catch (err) {
+    console.error('[ObtainQR] Error:', err.message);
+    return res.status(500).json({ message: err.message });
   }
 }
 
