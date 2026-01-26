@@ -156,17 +156,27 @@ const checkRutExists = async (req, res) => {
   }
 };
 
-// Get user details by RUT for validation
+// Get user details by RUT or name for validation
 const getUserByRut = async (req, res) => {
   try {
     const { rut } = req.body;
     
     if (!rut || rut.trim() === '') {
-      return res.status(400).json({ success: false, message: 'RUT es requerido.' });
+      return res.status(400).json({ success: false, message: 'RUT o nombre es requerido.' });
     }
     
+    // First, try to find by RUT (IDUsuario)
     const normalizedRut = rut.replace(/\./g, '').trim();
-    const user = await findOne("call spPRY_Usuarios_ObtenerPorID(?)", [normalizedRut]);
+    let user = await findOne("call spPRY_Usuarios_ObtenerPorID(?)", [normalizedRut]);
+    
+    // If not found by RUT, try to find by name (NombreUsuario)
+    if (!user) {
+      console.log('[GetUserByRut] User not found by RUT, trying to find by name:', rut.trim());
+      user = await findOne(
+        "SELECT IDUsuario, NombreUsuario, CorreoElectronico, Telefono, IDRol FROM PRY_Usuarios WHERE NombreUsuario = ? AND Activo = 1",
+        [rut.trim()]
+      );
+    }
     
     if (!user) {
       return res.status(200).json({ success: true, exists: false, user: null });
@@ -179,7 +189,8 @@ const getUserByRut = async (req, res) => {
         rut: user.IDUsuario,
         nombre: user.NombreUsuario,
         correo: user.CorreoElectronico,
-        telefono: user.Telefono
+        telefono: user.Telefono,
+        idRol: user.IDRol
       }
     });
   } catch (err) {

@@ -38,7 +38,21 @@ const password = async (req, res) => {
       throw new Error("La contraseña debe tener al menos 6 caracteres.");
     }
 
-    const user = await findOne("call spPRY_Usuarios_ObtenerPorID(?)", [normalizedUsername])
+    // First, try to find user by RUT (IDUsuario)
+    let user = await findOne("call spPRY_Usuarios_ObtenerPorID(?)", [normalizedUsername])
+    
+    // If not found by RUT, try to find by name (NombreUsuario)
+    if (!user) {
+      console.log('[Password] User not found by RUT, trying to find by name:', username.trim());
+      user = await findOne(
+        "SELECT IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, PassTemp FROM PRY_Usuarios WHERE NombreUsuario = ? AND Activo = 1",
+        [username.trim()]
+      );
+      
+      if (user) {
+        console.log('[Password] User found by name:', user.NombreUsuario, 'RUT:', user.IDUsuario);
+      }
+    }
 
     if (!user)
       throw new Error("Usuario no existe")
@@ -47,9 +61,11 @@ const password = async (req, res) => {
     if (isMatch)
       throw new Error("Contraseña no puede ser igual a la anterior.")
 
-    await pool.query("call spPRY_Usuarios_CambiarPass(?,?)", [normalizedUsername, password])
+    // Use the actual RUT (IDUsuario) from the user object
+    const userRut = user.IDUsuario;
+    await pool.query("call spPRY_Usuarios_CambiarPass(?,?)", [userRut, password])
 
-    console.log('[Password] Password changed successfully for:', normalizedUsername);
+    console.log('[Password] Password changed successfully for:', userRut, '(', user.NombreUsuario, ')');
     return res.json({ username: user.NombreUsuario, userrol: user.IDRol, passTemp: user.PassTemp })
   } catch (err) {
     console.error('[Password] Error:', err.message);
