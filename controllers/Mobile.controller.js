@@ -156,6 +156,63 @@ const checkRutExists = async (req, res) => {
   }
 };
 
+// Get user details by RUT for validation
+const getUserByRut = async (req, res) => {
+  try {
+    const { rut } = req.body;
+    
+    if (!rut || rut.trim() === '') {
+      return res.status(400).json({ success: false, message: 'RUT es requerido.' });
+    }
+    
+    const normalizedRut = rut.replace(/\./g, '').trim();
+    const user = await findOne("call spPRY_Usuarios_ObtenerPorID(?)", [normalizedRut]);
+    
+    if (!user) {
+      return res.status(200).json({ success: true, exists: false, user: null });
+    }
+    
+    return res.status(200).json({
+      success: true,
+      exists: true,
+      user: {
+        rut: user.IDUsuario,
+        nombre: user.NombreUsuario,
+        correo: user.CorreoElectronico,
+        telefono: user.Telefono
+      }
+    });
+  } catch (err) {
+    console.error('[GetUserByRut] Error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// Get unidades (rooms) list
+const getUnidades = async (req, res) => {
+  try {
+    console.log('[GetUnidades] Fetching unidades...');
+    const _unidades = await findMany('call spPRY_Sala_Listar();', []);
+    console.log('[GetUnidades] Raw unidades from DB:', JSON.stringify(_unidades));
+    
+    if (!_unidades || _unidades.length === 0) {
+      console.warn('[GetUnidades] No unidades found in database');
+      return res.status(200).json({ success: true, data: [] });
+    }
+    
+    const unidades = _unidades.map((unidad) => ({
+      value: unidad.IDSala,
+      label: `${unidad.Edificio || ''}-${unidad.Piso || ''}${unidad.Sala || ''}`
+    }));
+    
+    console.log('[GetUnidades] Formatted unidades:', JSON.stringify(unidades));
+    return res.status(200).json({ success: true, data: unidades });
+  } catch (err) {
+    console.error('[GetUnidades] Error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // Map frontend role codes to database role IDs
 const mapRoleCodeToId = (roleCode) => {
   const roleMap = {
@@ -432,5 +489,7 @@ module.exports = {
   login,
   addUsuario,
   obtenerQR,
-  checkRutExists
+  checkRutExists,
+  getUserByRut,
+  getUnidades
 }
