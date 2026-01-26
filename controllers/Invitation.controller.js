@@ -291,7 +291,7 @@ const cancelInvitation = async (req, res) => {
 };
 
 /**
- * Validate QR code for access
+ * Validate QR code for access (both invitation and personal QR codes)
  * POST /access/validate-qr
  */
 const validateQR = async (req, res) => {
@@ -308,16 +308,21 @@ const validateQR = async (req, res) => {
       });
     }
 
-    // Validate invitation
-    const invitation = await findOne('call spPRY_Invitacion_Validar(?);', [qrCode]);
-
     let result = 'DENIED';
     let reason = 'INVALID';
     let allowed = false;
+    let invitation = null;
+    let personalAccess = null;
+    let userName = null;
+    let validUntil = null;
+    let qrType = null; // 'invitation' or 'personal'
 
-    if (!invitation) {
-      reason = 'INVALID_CODE';
-    } else {
+    // First, try to validate as invitation QR code
+    invitation = await findOne('call spPRY_Invitacion_Validar(?);', [qrCode]);
+
+    if (invitation) {
+      // This is an invitation QR code
+      qrType = 'invitation';
       const validationResult = invitation.ValidationResult;
       
       switch (validationResult) {
@@ -325,23 +330,66 @@ const validateQR = async (req, res) => {
           result = 'ALLOWED';
           reason = 'ACCESS_GRANTED';
           allowed = true;
+          userName = invitation.NombreInvitado;
+          validUntil = invitation.FechaFin;
           // Mark as used
           await pool.query('call spPRY_Invitacion_MarcarUsada(?);', [qrCode]);
+          console.log('[Access] Invitation QR validated successfully');
           break;
         case 'CANCELLED':
           reason = 'INVITATION_CANCELLED';
           break;
-        case 'EXPIRED':
-          reason = 'INVITATION_EXPIRED';
-          break;
         case 'USED':
           reason = 'USAGE_LIMIT_REACHED';
+          break;
+        case 'EXPIRED':
+          reason = 'INVITATION_EXPIRED';
           break;
         case 'NOT_YET_VALID':
           reason = 'NOT_YET_VALID';
           break;
         default:
           reason = 'UNKNOWN_ERROR';
+      }
+    } else {
+      // Not an invitation, try to validate as personal QR code
+      qrType = 'personal';
+      personalAccess = await findOne('call spPRY_Acceso_ObtenerPorAcceso(?);', [qrCode]);
+      
+      if (personalAccess && personalAccess.Payload) {
+        try {
+          const payload = JSON.parse(personalAccess.Payload);
+          const now = new Date();
+          const fechaInicio = new Date(payload.fechaInicio);
+          const fechaFin = new Date(payload.fechaFin);
+          
+          console.log('[Access] Personal QR found. Validating dates...');
+          console.log('[Access] Now:', now);
+          console.log('[Access] Valid from:', fechaInicio);
+          console.log('[Access] Valid until:', fechaFin);
+          
+          // Check if current time is within validity period
+          if (now >= fechaInicio && now <= fechaFin) {
+            result = 'ALLOWED';
+            reason = 'ACCESS_GRANTED';
+            allowed = true;
+            userName = personalAccess.NombreUsuario || personalAccess.IDUsuario;
+            validUntil = payload.fechaFin;
+            console.log('[Access] Personal QR code validated successfully for user:', userName);
+          } else if (now < fechaInicio) {
+            reason = 'NOT_YET_VALID';
+            console.log('[Access] Personal QR code not yet valid');
+          } else {
+            reason = 'EXPIRED';
+            console.log('[Access] Personal QR code expired');
+          }
+        } catch (parseErr) {
+          console.error('[Access] Error parsing payload:', parseErr);
+          reason = 'INVALID_PAYLOAD';
+        }
+      } else {
+        reason = 'INVALID_CODE';
+        console.log('[Access] QR code not found in database');
       }
     }
 
@@ -361,15 +409,16 @@ const validateQR = async (req, res) => {
       console.error('[Access] Error logging event:', logErr.message);
     }
 
-    console.log('[Access] Result:', { allowed, reason });
+    console.log('[Access] Result:', { allowed, reason, qrType, userName });
 
     return res.status(200).json({
       allowed,
       reason,
       action: allowed ? 'OPEN_DOOR' : null,
-      invitation: allowed ? {
-        nombre: invitation?.NombreInvitado,
-        validUntil: invitation?.FechaFin
+      qrType: qrType || 'unknown',
+      user: allowed ? {
+        nombre: userName,
+        validUntil: validUntil
       } : null
     });
 
