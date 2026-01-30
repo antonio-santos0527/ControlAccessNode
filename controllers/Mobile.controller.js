@@ -403,44 +403,42 @@ const addUsuario = async (req, res) => {
 
 const login = async (req, res) => {
   console.log('[Mobile Login] ====== Login Request ======');
-  console.log('[Mobile Login] Body:', JSON.stringify(req.body));
+  console.log('[Mobile Login] Body:', JSON.stringify({ ...req.body, fullName: req.body.fullName ? '***' : '' }));
   
-  const { username: rawUsername, password } = req.body
+  const { username: rawUsername, fullName: rawFullName } = req.body;
   // Remove dots from RUT for database lookup (e.g., "11.111.111-1" -> "11111111-1")
   const username = rawUsername ? rawUsername.replace(/\./g, '') : '';
+  const fullName = (rawFullName || '').trim();
   
   console.log('[Mobile Login] Raw Username:', rawUsername);
   console.log('[Mobile Login] Normalized Username:', username);
-  console.log('[Mobile Login] Password received:', password ? '***' : 'EMPTY');
+  console.log('[Mobile Login] Full name provided:', fullName ? 'YES' : 'NO');
   
   try {
+    if (!fullName) {
+      throw new Error("El nombre completo es requerido.");
+    }
+
     console.log('[Mobile Login] Querying user from database...');
-    const user = await findOne("call spPRY_Usuarios_ObtenerPorID(?)", [username])
+    const user = await findOne("call spPRY_Usuarios_ObtenerPorID(?)", [username]);
     console.log('[Mobile Login] User found:', user ? 'YES' : 'NO');
     
     if (!user) {
       console.log('[Mobile Login] ERROR: User not found');
-      throw new Error("Usuario inválido.")
+      throw new Error("Usuario inválido.");
     }
     
     console.log('[Mobile Login] User data:', JSON.stringify({
       IDUsuario: user.IDUsuario,
       NombreUsuario: user.NombreUsuario,
-      IDRol: user.IDRol,
-      PassTemp: user.PassTemp
+      IDRol: user.IDRol
     }));
     
-    const hashedInput = String(Cryptojs.MD5(password));
-    console.log('[Mobile Login] Password hash comparison:');
-    console.log('[Mobile Login]   Input hash:', hashedInput);
-    console.log('[Mobile Login]   DB hash:   ', user.Passwd);
-    
-    const isMatch = hashedInput === user.Passwd
-    console.log('[Mobile Login] Password match:', isMatch);
-    
-    if (!isMatch) {
-      console.log('[Mobile Login] ERROR: Password mismatch');
-      throw new Error("Contraseña inválida.")
+    // Validate full name matches (case-insensitive)
+    const nameMatch = fullName.toLowerCase() === (user.NombreUsuario || '').toLowerCase();
+    if (!nameMatch) {
+      console.log('[Mobile Login] ERROR: Full name does not match');
+      throw new Error("Nombre completo no coincide.");
     }
 
     console.log('[Mobile Login] Fetching roles...');
@@ -462,8 +460,8 @@ const login = async (req, res) => {
       label: `${unidad.Edificio || ''}-${unidad.Piso || ''}${unidad.Sala || ''}`
     }))
 
-    // PassTemp is a number (0 or 1), not an array
-    const passTemp = typeof user.PassTemp === 'number' ? user.PassTemp : (user.PassTemp?.[0] ?? 0);
+    // Name-based login: no password change flow (passTemp always 0)
+    const passTemp = 0;
     
     const responseData = { 
       username: user.NombreUsuario, 

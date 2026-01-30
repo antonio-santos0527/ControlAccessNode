@@ -33,7 +33,7 @@ function parseArgs() {
     adminUser: '11111111-1',
     adminPass: 'admin123',
     adminEmail: 'admin@example.com',
-    adminName: 'Administrador',
+    adminName: 'admin',
     adminPhone: '+56900000000'
   };
 
@@ -73,7 +73,7 @@ Options:
   --admin-user <rut>       Admin user RUT/ID (default: 11111111-1)
   --admin-pass <password>  Admin password (default: admin123)
   --admin-email <email>    Admin email (default: admin@example.com)
-  --admin-name <name>      Admin name (default: Administrador)
+  --admin-name <name>      Admin full name for login (default: admin)
   --admin-phone <phone>    Admin phone (default: +56900000000)
   --help                   Show this help message
 
@@ -782,15 +782,15 @@ async function main() {
     );
 
     if (existingUsers.length > 0) {
-      console.log(`User "${options.adminUser}" already exists. Updating password...`);
+      console.log(`User "${options.adminUser}" already exists. Updating name...`);
       await connection.query(
-        'UPDATE PRY_Usuarios SET Passwd = ?, PassTemp = 1 WHERE IDUsuario = ?',
-        [hashedPassword, options.adminUser]
+        'UPDATE PRY_Usuarios SET NombreUsuario = ?, Passwd = ?, PassTemp = 0 WHERE IDUsuario = ?',
+        [options.adminName, hashedPassword, options.adminUser]
       );
     } else {
       await connection.query(
         `INSERT INTO PRY_Usuarios (IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, PassTemp) 
-         VALUES (?, ?, ?, ?, ?, 1, 1)`,
+         VALUES (?, ?, ?, ?, ?, 1, 0)`,
         [options.adminUser, options.adminName, hashedPassword, options.adminEmail, options.adminPhone]
       );
     }
@@ -800,17 +800,16 @@ async function main() {
     console.log('========================================');
     console.log('  Setup Complete!');
     console.log('========================================\n');
-    console.log('Admin Credentials:');
-    console.log(`  User:     ${options.adminUser}`);
-    console.log(`  Password: ${options.adminPass}`);
-    console.log(`  Email:    ${options.adminEmail}`);
-    console.log(`  Role:     Administrador (ID: 1)\n`);
-    console.log('Note: Password is temporary - user will be prompted to change on first login.\n');
+    console.log('Admin credentials (login with RUT + full name):');
+    console.log(`  RUT:       ${options.adminUser}`);
+    console.log(`  Nombre:    ${options.adminName}`);
+    console.log(`  Email:     ${options.adminEmail}`);
+    console.log(`  Role:      Administrador (ID: 1)\n`);
 
     console.log('Next Steps:');
     console.log('  1. Start backend:  npm run dev');
     console.log('  2. Start frontend: cd ../ControlAccess && npm run dev');
-    console.log('  3. Login with admin credentials\n');
+    console.log('  3. Login with RUT and full name (e.g. RUT: 11111111-1, Nombre: admin)\n');
 
   } catch (error) {
     console.error('\nError during setup:', error.message);

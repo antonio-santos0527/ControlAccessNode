@@ -63,6 +63,7 @@ app.use((req, res, next) => {
   if (req.body && Object.keys(req.body).length > 0) {
     const safeBody = { ...req.body };
     if (safeBody.password) safeBody.password = '***';
+    if (safeBody.fullName) safeBody.fullName = '***';
     console.log(`[Request] Body:`, JSON.stringify(safeBody));
   }
   next();
