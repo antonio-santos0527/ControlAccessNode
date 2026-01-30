@@ -7,55 +7,74 @@ const { getRandomNumericString } = require("../utils/Functions");
 
 const obtainQR = async (req, res) => {
   try {
-    const { user, fechaInicio, fechaFin } = req.body;
-    console.log('[ObtainQR] Request for user:', user);
-    
-    // Get existing access record for user
-    let datos = null;
+    const { user } = req.body;
+    if (!user) {
+      return res.status(400).json({ message: 'user is required' });
+    }
+    const normalizedUser = (user || '').replace(/\./g, '').trim();
+    console.log('[ObtainQR] Request for user:', normalizedUser);
+
+    // Get user role for validity window: Admin = short-lived (2 min), others = 5 min
+    const userRecord = await findOne('call spPRY_Usuarios_ObtenerPorID(?)', [normalizedUser]);
+    const roleId = userRecord?.IDRol ?? 1;
+    const validityMinutes = roleId === 1 ? 2 : 5; // Administrador: 2 min; Supervisor, Residente, Personal: 5 min
+
+    const now = new Date();
+    const end = new Date(now.getTime() + validityMinutes * 60 * 1000);
+    const fechaInicio = now.toISOString().slice(0, 19).replace('T', ' ');
+    const fechaFin = end.toISOString().slice(0, 19).replace('T', ' ');
+
+    // Get existing access record to preserve lease (Tenant/Personal) and sala
     let payload = null;
-    
     try {
-      datos = await findOne('call spPRY_Acceso_ObtenerPorUsuario(?);', [user]);
+      const datos = await findOne('call spPRY_Acceso_ObtenerPorUsuario(?);', [normalizedUser]);
       if (datos && datos.Payload) {
         payload = JSON.parse(datos.Payload);
       }
     } catch (e) {
-      console.log('[ObtainQR] No existing access record found for user:', user);
+      console.log('[ObtainQR] No existing access record found for user:', normalizedUser);
     }
-    
+
     // Generate a unique code for the QR
     const ids = await findMany("call spPRY_IDAcceso_Listar();", []);
     let codigo;
     do {
       codigo = getRandomNumericString(10);
     } while (ids.some(item => item["IDAcceso"] === codigo));
-    
-    console.log('[ObtainQR] Generated code:', codigo);
-    
-    // Create new payload with fresh timestamps
+
+    console.log('[ObtainQR] Generated code:', codigo, 'validity:', validityMinutes, 'min');
+
+    // Lease from user record (single source of truth); fallback to payload for legacy
+    const leaseStart = userRecord?.FechaInicioValidez ?? payload?.leaseStart ?? payload?.fechaInicio ?? null;
+    const leaseEnd = userRecord?.FechaFinValidez ?? payload?.leaseEnd ?? payload?.fechaFin ?? null;
+    const sala = userRecord?.IDSala ?? payload?.sala ?? null;
+
     const newPayload = {
       codigo,
       fechaInicio,
       fechaFin,
-      sala: payload?.sala || null,
-      isCard: false
+      sala,
+      isCard: false,
+      roleId,
+      leaseStart,
+      leaseEnd
     };
-    
-    // Save/update the access record
+
     try {
-      await pool.query('call spPRY_Usuario_AgregarEnlace(?,?,?);', [codigo, user, JSON.stringify(newPayload)]);
+      await pool.query('call spPRY_Usuario_AgregarEnlace(?,?,?);', [codigo, normalizedUser, JSON.stringify(newPayload)]);
       console.log('[ObtainQR] Access record saved');
     } catch (e) {
       console.log('[ObtainQR] Error saving access record:', e.message);
-      // Continue anyway - we can still generate QR
     }
 
-    // Generate QR code image
     const qrImage = qr.imageSync(`${codigo}`, { type: 'png' });
     const base64 = qrImage.toString("base64");
-    
-    console.log('[ObtainQR] QR generated successfully');
-    res.status(200).json({ qrCode: `data:image/png;base64,${base64}` });
+
+    res.status(200).json({
+      qrCode: `data:image/png;base64,${base64}`,
+      validityEnd: end.toISOString(),
+      validityMinutes
+    });
   } catch (err) {
     console.error('[ObtainQR] Error:', err.message);
     return res.status(500).json({ message: err.message });
@@ -224,36 +243,25 @@ const getUnidades = async (req, res) => {
   }
 };
 
-// Map frontend role codes to database role IDs
+// Map frontend role codes to database role IDs (Administrador, Supervisor, Residente, Personal)
 const mapRoleCodeToId = (roleCode) => {
   const roleMap = {
     'ADM': 1,  // Administrador
-    'OFC': 2,  // Oficial -> Supervisor (closest match)
-    'ENC': 2,  // Encargado -> Supervisor (closest match)
-    'RES': 3,  // Residente -> Usuario (closest match)
     'SUP': 2,  // Supervisor
-    'USR': 3,  // Usuario
-    'VIS': 4,  // Visitante
-    'PRO': 3,  // Proveedor -> Usuario
-    'SAD': 1   // Super Admin -> Administrador
+    'RES': 3,  // Residente (Tenant)
+    'PPL': 4,  // Personal (Staff)
+    'SAD': 1,  // Super Admin -> Administrador
+    // Legacy
+    'OFC': 2,  'ENC': 2,  'USR': 3,  'PRO': 3,  'VIS': 4
   };
   
-  // If it's already a number, return it
-  if (typeof roleCode === 'number') {
-    return roleCode;
-  }
+  if (typeof roleCode === 'number') return roleCode;
+  if (!isNaN(roleCode)) return parseInt(roleCode, 10);
   
-  // If it's a string number, convert it
-  if (!isNaN(roleCode)) {
-    return parseInt(roleCode, 10);
-  }
-  
-  // Map role code to ID
   const roleId = roleMap[roleCode?.toUpperCase()];
   if (!roleId) {
-    throw new Error(`Rol inválido: ${roleCode}. Roles válidos: ADM, OFC, ENC, RES, SUP, USR, VIS, PRO, SAD`);
+    throw new Error(`Rol inválido: ${roleCode}. Roles válidos: ADM, SUP, RES, PPL`);
   }
-  
   return roleId;
 };
 
@@ -283,9 +291,11 @@ const addUsuario = async (req, res) => {
     if (!rol) {
       throw new Error("El rol es requerido.");
     }
-    
-    if (!sala) {
-      throw new Error("La unidad es requerida.");
+
+    // Unit (sala) is required only for Residente (role ID 3)
+    const roleId = mapRoleCodeToId(rol);
+    if (roleId === 3 && (!sala && sala !== 0)) {
+      throw new Error("La unidad es requerida para el rol Residente.");
     }
 
     // Normalize RUT
@@ -333,23 +343,28 @@ const addUsuario = async (req, res) => {
     if (existe)
       throw new Error("El RUT ya está registrado.");
 
-    // Map role code to database role ID
-    const roleId = mapRoleCodeToId(rol);
     console.log('[AddUsuario] Role code:', rol, '-> Role ID:', roleId);
 
     const pass = getRandomString(8);
     console.log('[AddUsuario] Generated password for user:', normalizedRut);
 
+    const idSala = (roleId === 3 && sala) ? sala : null;
+    const fechaInicioValidez = (roleId === 3 || roleId === 4) ? fechaInicio : null;
+    const fechaFinValidez = (roleId === 3 || roleId === 4) ? fechaFin : null;
+
     console.log('[AddUsuario] Calling spPRY_Usuario_Guardar with:', {
       rut: normalizedRut,
       nombre: trimmedNombre,
-      correo: correo.trim(),
-      telefono: trimmedTelefono,
-      rolId: roleId
+      rolId: roleId,
+      idSala: idSala,
+      fechaInicioValidez,
+      fechaFinValidez
     });
 
-    await pool.query('call spPRY_Usuario_Guardar(?,?,?,?,?,?);',
-      [normalizedRut, trimmedNombre, pass, correo.trim(), trimmedTelefono, roleId])
+    await pool.query('call spPRY_Usuario_Guardar(?,?,?,?,?,?,?,?,?);', [
+      normalizedRut, trimmedNombre, pass, correo.trim(), trimmedTelefono, roleId,
+      idSala, fechaInicioValidez, fechaFinValidez
+    ]);
     
     console.log('[AddUsuario] User saved successfully in PRY_Usuarios');
 
@@ -365,8 +380,11 @@ const addUsuario = async (req, res) => {
       codigo,
       fechaInicio,
       fechaFin,
-      sala,
-      isCard: false
+      sala: sala || null,
+      isCard: false,
+      roleId,
+      leaseStart: fechaInicio,
+      leaseEnd: fechaFin
     }
 
     await pool.query('call spPRY_Usuario_AgregarEnlace(?,?,?);', [codigo, normalizedRut, JSON.stringify(payload)])

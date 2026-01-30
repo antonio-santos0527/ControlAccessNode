@@ -115,19 +115,20 @@ async function main() {
     // Step 2: Create tables directly (more reliable than parsing SQL file)
     console.log('Step 2: Creating tables...');
     
-    // Roles Table
+    // Roles Table (RequiereUnidad = 1 for Residente/Tenant)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS PRY_Rol (
         IDRol INT AUTO_INCREMENT PRIMARY KEY,
         Descripcion VARCHAR(100) NOT NULL,
         Restriccion INT DEFAULT 0,
+        RequiereUnidad TINYINT(1) DEFAULT 0,
         Activo TINYINT(1) DEFAULT 1,
         FechaCreacion DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
     console.log('  - PRY_Rol created');
 
-    // Users Table
+    // Users Table (IDSala = unit for Residente; FechaInicioValidez/FechaFinValidez = lease/contract period)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS PRY_Usuarios (
         IDUsuario VARCHAR(50) PRIMARY KEY,
@@ -136,6 +137,9 @@ async function main() {
         CorreoElectronico VARCHAR(255),
         Telefono VARCHAR(20),
         IDRol INT,
+        IDSala INT NULL,
+        FechaInicioValidez DATETIME NULL,
+        FechaFinValidez DATETIME NULL,
         PassTemp TINYINT(1) DEFAULT 1,
         Activo TINYINT(1) DEFAULT 1,
         FechaCreacion DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -316,16 +320,54 @@ async function main() {
     `);
     console.log('  - PRY_AccessEvent created');
 
-    // Insert default roles
+    // Insert default roles: Administrador, Supervisor, Residente (Tenant), Personal (Staff)
     await connection.query(`
       INSERT IGNORE INTO PRY_Rol (IDRol, Descripcion, Restriccion) VALUES 
         (1, 'Administrador', 1),
         (2, 'Supervisor', 2),
-        (3, 'Usuario', 3),
-        (4, 'Visitante', 4)
+        (3, 'Residente', 3),
+        (4, 'Personal', 4)
     `);
-    console.log('  - Default roles inserted');
-    console.log('Tables created successfully.\n');
+    await connection.query(`
+      UPDATE PRY_Rol SET Descripcion = 'Residente' WHERE IDRol = 3;
+      UPDATE PRY_Rol SET Descripcion = 'Personal' WHERE IDRol = 4;
+    `);
+    console.log('  - Default roles inserted/updated');
+
+    // Migrations: add new columns to existing tables (no-op if already present)
+    try {
+      await connection.query('ALTER TABLE PRY_Usuarios ADD COLUMN IDSala INT NULL AFTER IDRol');
+      console.log('  - PRY_Usuarios: added IDSala');
+    } catch (e) {
+      if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
+    try {
+      await connection.query('ALTER TABLE PRY_Usuarios ADD COLUMN FechaInicioValidez DATETIME NULL AFTER IDSala');
+      console.log('  - PRY_Usuarios: added FechaInicioValidez');
+    } catch (e) {
+      if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
+    try {
+      await connection.query('ALTER TABLE PRY_Usuarios ADD COLUMN FechaFinValidez DATETIME NULL AFTER FechaInicioValidez');
+      console.log('  - PRY_Usuarios: added FechaFinValidez');
+    } catch (e) {
+      if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
+    try {
+      await connection.query('ALTER TABLE PRY_Rol ADD COLUMN RequiereUnidad TINYINT(1) DEFAULT 0 AFTER Restriccion');
+      console.log('  - PRY_Rol: added RequiereUnidad');
+    } catch (e) {
+      if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
+    try {
+      await connection.query('ALTER TABLE PRY_Usuarios ADD CONSTRAINT fk_usuarios_sala FOREIGN KEY (IDSala) REFERENCES PRY_Sala(IDSala)');
+      console.log('  - PRY_Usuarios: added FK to PRY_Sala');
+    } catch (e) {
+      if (e.code !== 'ER_DUP_KEY' && e.code !== 'ER_FK_DUP_NAME') throw e;
+    }
+    await connection.query("UPDATE PRY_Rol SET RequiereUnidad = 1 WHERE IDRol = 3");
+    console.log('  - PRY_Rol: Residente (3) requires unit');
+    console.log('Tables created/updated successfully.\n');
 
     // Step 3: Create stored procedures
     console.log('Step 3: Creating stored procedures...');
@@ -334,7 +376,8 @@ async function main() {
       // Get user by ID (for login)
       `CREATE PROCEDURE spPRY_Usuarios_ObtenerPorID(IN p_IDUsuario VARCHAR(50))
        BEGIN
-         SELECT IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, PassTemp
+         SELECT IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol,
+                IDSala, FechaInicioValidez, FechaFinValidez, PassTemp
          FROM PRY_Usuarios WHERE IDUsuario = p_IDUsuario AND Activo = 1;
        END`,
       
@@ -348,6 +391,7 @@ async function main() {
       `CREATE PROCEDURE spPRY_Usuario_Listar()
        BEGIN
          SELECT u.IDUsuario, u.NombreUsuario, u.CorreoElectronico, u.Telefono, u.IDRol,
+                u.IDSala, u.FechaInicioValidez, u.FechaFinValidez,
                 r.Descripcion AS Rol, a.IDAcceso
          FROM PRY_Usuarios u
          LEFT JOIN PRY_Rol r ON u.IDRol = r.IDRol
@@ -355,12 +399,18 @@ async function main() {
          WHERE u.Activo = 1 ORDER BY u.NombreUsuario;
        END`,
       
-      // Save user
-      `CREATE PROCEDURE spPRY_Usuario_Guardar(IN p_Rut VARCHAR(50), IN p_Nombre VARCHAR(255), IN p_Passwd VARCHAR(255), IN p_Correo VARCHAR(255), IN p_Telefono VARCHAR(20), IN p_IDRol INT)
+      // Save user (IDSala, FechaInicioValidez, FechaFinValidez for Residente/Personal)
+      `CREATE PROCEDURE spPRY_Usuario_Guardar(
+         IN p_Rut VARCHAR(50), IN p_Nombre VARCHAR(255), IN p_Passwd VARCHAR(255),
+         IN p_Correo VARCHAR(255), IN p_Telefono VARCHAR(20), IN p_IDRol INT,
+         IN p_IDSala INT, IN p_FechaInicioValidez DATETIME, IN p_FechaFinValidez DATETIME
+       )
        BEGIN
-         INSERT INTO PRY_Usuarios (IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, PassTemp)
-         VALUES (p_Rut, p_Nombre, MD5(p_Passwd), p_Correo, p_Telefono, p_IDRol, 1)
-         ON DUPLICATE KEY UPDATE NombreUsuario = p_Nombre, CorreoElectronico = p_Correo, Telefono = p_Telefono, IDRol = p_IDRol;
+         INSERT INTO PRY_Usuarios (IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, IDSala, FechaInicioValidez, FechaFinValidez, PassTemp)
+         VALUES (p_Rut, p_Nombre, MD5(p_Passwd), p_Correo, p_Telefono, p_IDRol, p_IDSala, p_FechaInicioValidez, p_FechaFinValidez, 0)
+         ON DUPLICATE KEY UPDATE
+           NombreUsuario = p_Nombre, CorreoElectronico = p_Correo, Telefono = p_Telefono, IDRol = p_IDRol,
+           IDSala = p_IDSala, FechaInicioValidez = p_FechaInicioValidez, FechaFinValidez = p_FechaFinValidez;
        END`,
       
       // Delete user
@@ -789,8 +839,8 @@ async function main() {
       );
     } else {
       await connection.query(
-        `INSERT INTO PRY_Usuarios (IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, PassTemp) 
-         VALUES (?, ?, ?, ?, ?, 1, 0)`,
+        `INSERT INTO PRY_Usuarios (IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, IDSala, FechaInicioValidez, FechaFinValidez, PassTemp) 
+         VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, NULL, 0)`,
         [options.adminUser, options.adminName, hashedPassword, options.adminEmail, options.adminPhone]
       );
     }

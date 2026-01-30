@@ -360,28 +360,45 @@ const validateQR = async (req, res) => {
         try {
           const payload = JSON.parse(personalAccess.Payload);
           const now = new Date();
-          const fechaInicio = new Date(payload.fechaInicio);
-          const fechaFin = new Date(payload.fechaFin);
-          
-          console.log('[Access] Personal QR found. Validating dates...');
+          const tokenStart = new Date(payload.fechaInicio);
+          const tokenEnd = new Date(payload.fechaFin);
+
+          console.log('[Access] Personal QR found. Validating token and lease...');
           console.log('[Access] Now:', now);
-          console.log('[Access] Valid from:', fechaInicio);
-          console.log('[Access] Valid until:', fechaFin);
-          
-          // Check if current time is within validity period
-          if (now >= fechaInicio && now <= fechaFin) {
-            result = 'ALLOWED';
-            reason = 'ACCESS_GRANTED';
-            allowed = true;
-            userName = personalAccess.NombreUsuario || personalAccess.IDUsuario;
-            validUntil = payload.fechaFin;
-            console.log('[Access] Personal QR code validated successfully for user:', userName);
-          } else if (now < fechaInicio) {
+          console.log('[Access] Token valid:', tokenStart, '-', tokenEnd);
+
+          // 1. Short-lived token must be valid
+          if (now < tokenStart) {
             reason = 'NOT_YET_VALID';
-            console.log('[Access] Personal QR code not yet valid');
-          } else {
+            console.log('[Access] Personal QR token not yet valid');
+          } else if (now > tokenEnd) {
             reason = 'EXPIRED';
-            console.log('[Access] Personal QR code expired');
+            console.log('[Access] Personal QR token expired');
+          } else {
+            // 2. For Residente (3) and Personal (4), also check lease/contract period when present
+            const roleId = payload.roleId ?? 1;
+            if (roleId === 3 || roleId === 4) {
+              const leaseStart = payload.leaseStart ? new Date(payload.leaseStart) : null;
+              const leaseEnd = payload.leaseEnd ? new Date(payload.leaseEnd) : null;
+              if (leaseStart && leaseEnd && (now < leaseStart || now > leaseEnd)) {
+                reason = 'OUTSIDE_ACCESS_PERIOD';
+                console.log('[Access] User access period (Inicio/Fin) does not include now');
+              } else {
+                result = 'ALLOWED';
+                reason = 'ACCESS_GRANTED';
+                allowed = true;
+                userName = personalAccess.NombreUsuario || personalAccess.IDUsuario;
+                validUntil = payload.fechaFin;
+                console.log('[Access] Personal QR validated for user:', userName);
+              }
+            } else {
+              result = 'ALLOWED';
+              reason = 'ACCESS_GRANTED';
+              allowed = true;
+              userName = personalAccess.NombreUsuario || personalAccess.IDUsuario;
+              validUntil = payload.fechaFin;
+              console.log('[Access] Personal QR validated for user:', userName);
+            }
           }
         } catch (parseErr) {
           console.error('[Access] Error parsing payload:', parseErr);

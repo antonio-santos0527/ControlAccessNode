@@ -10,7 +10,7 @@ DELIMITER //
 -- USER AUTHENTICATION PROCEDURES
 -- =====================================================
 
--- Get user by ID (for login)
+-- Get user by ID (for login; includes IDSala, FechaInicioValidez, FechaFinValidez)
 DROP PROCEDURE IF EXISTS spPRY_Usuarios_ObtenerPorID //
 CREATE PROCEDURE spPRY_Usuarios_ObtenerPorID(IN p_IDUsuario VARCHAR(50))
 BEGIN
@@ -21,6 +21,9 @@ BEGIN
         CorreoElectronico,
         Telefono,
         IDRol,
+        IDSala,
+        FechaInicioValidez,
+        FechaFinValidez,
         PassTemp
     FROM PRY_Usuarios
     WHERE IDUsuario = p_IDUsuario AND Activo = 1;
@@ -52,6 +55,9 @@ BEGIN
         u.CorreoElectronico,
         u.Telefono,
         u.IDRol,
+        u.IDSala,
+        u.FechaInicioValidez,
+        u.FechaFinValidez,
         r.Descripcion AS Rol,
         a.IDAcceso
     FROM PRY_Usuarios u
@@ -61,7 +67,7 @@ BEGIN
     ORDER BY u.NombreUsuario;
 END //
 
--- Save/Create user
+-- Save/Create user (IDSala, FechaInicioValidez, FechaFinValidez for Residente/Personal)
 DROP PROCEDURE IF EXISTS spPRY_Usuario_Guardar //
 CREATE PROCEDURE spPRY_Usuario_Guardar(
     IN p_Rut VARCHAR(50),
@@ -69,16 +75,22 @@ CREATE PROCEDURE spPRY_Usuario_Guardar(
     IN p_Passwd VARCHAR(255),
     IN p_Correo VARCHAR(255),
     IN p_Telefono VARCHAR(20),
-    IN p_IDRol INT
+    IN p_IDRol INT,
+    IN p_IDSala INT,
+    IN p_FechaInicioValidez DATETIME,
+    IN p_FechaFinValidez DATETIME
 )
 BEGIN
-    INSERT INTO PRY_Usuarios (IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, PassTemp)
-    VALUES (p_Rut, p_Nombre, MD5(p_Passwd), p_Correo, p_Telefono, p_IDRol, 1)
+    INSERT INTO PRY_Usuarios (IDUsuario, NombreUsuario, Passwd, CorreoElectronico, Telefono, IDRol, IDSala, FechaInicioValidez, FechaFinValidez, PassTemp)
+    VALUES (p_Rut, p_Nombre, MD5(p_Passwd), p_Correo, p_Telefono, p_IDRol, p_IDSala, p_FechaInicioValidez, p_FechaFinValidez, 0)
     ON DUPLICATE KEY UPDATE
         NombreUsuario = p_Nombre,
         CorreoElectronico = p_Correo,
         Telefono = p_Telefono,
-        IDRol = p_IDRol;
+        IDRol = p_IDRol,
+        IDSala = p_IDSala,
+        FechaInicioValidez = p_FechaInicioValidez,
+        FechaFinValidez = p_FechaFinValidez;
 END //
 
 -- Delete user

@@ -38,7 +38,7 @@ const postData = async (req, res) => {
   try {
     const { rut, nombre, correo, telefono, passwd, idRol } = req.body
 
-    await pool.query('call spPRY_Usuario_Guardar(?,?,?,?,?,?);', [rut, nombre, passwd, correo, telefono, idRol])
+    await pool.query('call spPRY_Usuario_Guardar(?,?,?,?,?,?,?,?,?);', [rut, nombre, passwd, correo, telefono, idRol, null, null, null])
 
     const mailOptions = {
       from: `"Control De Acceso" <${process.env.EMAIL_USER}>`,
