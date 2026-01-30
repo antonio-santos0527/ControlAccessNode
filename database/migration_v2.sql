@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS PRY_Invitacion (
     INDEX idx_invitacion_acceso (IDAcceso)
 );
 
+-- Add TipoInvitacion (Visitante | Delivery) if missing
+ALTER TABLE PRY_Invitacion ADD COLUMN TipoInvitacion VARCHAR(50) DEFAULT 'Visitante' AFTER TelefonoInvitado;
+
 -- =====================================================
 -- 3. Create Access Events Table (Scan Logging)
 -- =====================================================
@@ -72,7 +75,7 @@ CREATE TABLE IF NOT EXISTS PRY_AccessEvent (
 
 DELIMITER //
 
--- Create invitation
+-- Create invitation (TipoInvitacion = Visitante | Delivery)
 DROP PROCEDURE IF EXISTS spPRY_Invitacion_Crear //
 CREATE PROCEDURE spPRY_Invitacion_Crear(
     IN p_IDAcceso VARCHAR(50),
@@ -81,6 +84,7 @@ CREATE PROCEDURE spPRY_Invitacion_Crear(
     IN p_RutInvitado VARCHAR(50),
     IN p_CorreoInvitado VARCHAR(255),
     IN p_TelefonoInvitado VARCHAR(20),
+    IN p_TipoInvitacion VARCHAR(50),
     IN p_Motivo VARCHAR(500),
     IN p_FechaInicio DATETIME,
     IN p_FechaFin DATETIME,
@@ -91,10 +95,10 @@ CREATE PROCEDURE spPRY_Invitacion_Crear(
 BEGIN
     INSERT INTO PRY_Invitacion (
         IDAcceso, CreadoPor, NombreInvitado, RutInvitado, CorreoInvitado,
-        TelefonoInvitado, Motivo, FechaInicio, FechaFin, IDSala, UsageLimit, QRCode
+        TelefonoInvitado, TipoInvitacion, Motivo, FechaInicio, FechaFin, IDSala, UsageLimit, QRCode
     ) VALUES (
         p_IDAcceso, p_CreadoPor, p_NombreInvitado, p_RutInvitado, p_CorreoInvitado,
-        p_TelefonoInvitado, p_Motivo, p_FechaInicio, p_FechaFin, p_IDSala, p_UsageLimit, p_QRCode
+        p_TelefonoInvitado, COALESCE(p_TipoInvitacion, 'Visitante'), p_Motivo, p_FechaInicio, p_FechaFin, p_IDSala, p_UsageLimit, p_QRCode
     );
     SELECT LAST_INSERT_ID() AS IDInvitacion;
 END //
@@ -110,6 +114,7 @@ BEGIN
         i.RutInvitado,
         i.CorreoInvitado,
         i.TelefonoInvitado,
+        i.TipoInvitacion,
         i.Motivo,
         i.FechaInicio,
         i.FechaFin,

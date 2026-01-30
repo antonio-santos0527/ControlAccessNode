@@ -274,7 +274,7 @@ async function main() {
     `);
     console.log('  - PRY_Log created');
 
-    // Invitations Table
+    // Invitations Table (TipoInvitacion = 'Visitante' | 'Delivery', not system roles)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS PRY_Invitacion (
         IDInvitacion INT AUTO_INCREMENT PRIMARY KEY,
@@ -284,6 +284,7 @@ async function main() {
         RutInvitado VARCHAR(50),
         CorreoInvitado VARCHAR(255),
         TelefonoInvitado VARCHAR(20),
+        TipoInvitacion VARCHAR(50) DEFAULT 'Visitante',
         Motivo VARCHAR(500),
         FechaInicio DATETIME NOT NULL,
         FechaFin DATETIME NOT NULL,
@@ -367,6 +368,12 @@ async function main() {
     }
     await connection.query("UPDATE PRY_Rol SET RequiereUnidad = 1 WHERE IDRol = 3");
     console.log('  - PRY_Rol: Residente (3) requires unit');
+    try {
+      await connection.query('ALTER TABLE PRY_Invitacion ADD COLUMN TipoInvitacion VARCHAR(50) DEFAULT \'Visitante\' AFTER TelefonoInvitado');
+      console.log('  - PRY_Invitacion: added TipoInvitacion');
+    } catch (e) {
+      if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+    }
     console.log('Tables created/updated successfully.\n');
 
     // Step 3: Create stored procedures
@@ -646,7 +653,7 @@ async function main() {
          INSERT INTO PRY_Log (Funcion, Linea, Request) VALUES (p_Funcion, p_Linea, p_Request);
        END`,
       
-      // Create invitation
+      // Create invitation (TipoInvitacion = Visitante | Delivery)
       `CREATE PROCEDURE spPRY_Invitacion_Crear(
         IN p_IDAcceso VARCHAR(50),
         IN p_CreadoPor VARCHAR(50),
@@ -654,6 +661,7 @@ async function main() {
         IN p_RutInvitado VARCHAR(50),
         IN p_CorreoInvitado VARCHAR(255),
         IN p_TelefonoInvitado VARCHAR(20),
+        IN p_TipoInvitacion VARCHAR(50),
         IN p_Motivo VARCHAR(500),
         IN p_FechaInicio DATETIME,
         IN p_FechaFin DATETIME,
@@ -664,10 +672,10 @@ async function main() {
        BEGIN
          INSERT INTO PRY_Invitacion (
            IDAcceso, CreadoPor, NombreInvitado, RutInvitado, CorreoInvitado,
-           TelefonoInvitado, Motivo, FechaInicio, FechaFin, IDSala, UsageLimit, QRCode
+           TelefonoInvitado, TipoInvitacion, Motivo, FechaInicio, FechaFin, IDSala, UsageLimit, QRCode
          ) VALUES (
            p_IDAcceso, p_CreadoPor, p_NombreInvitado, p_RutInvitado, p_CorreoInvitado,
-           p_TelefonoInvitado, p_Motivo, p_FechaInicio, p_FechaFin, p_IDSala, p_UsageLimit, p_QRCode
+           p_TelefonoInvitado, COALESCE(p_TipoInvitacion, 'Visitante'), p_Motivo, p_FechaInicio, p_FechaFin, p_IDSala, p_UsageLimit, p_QRCode
          );
          SELECT LAST_INSERT_ID() AS IDInvitacion;
        END`,
@@ -682,6 +690,7 @@ async function main() {
            i.RutInvitado,
            i.CorreoInvitado,
            i.TelefonoInvitado,
+           i.TipoInvitacion,
            i.Motivo,
            i.FechaInicio,
            i.FechaFin,

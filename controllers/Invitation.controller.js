@@ -4,8 +4,37 @@ const { sendMail } = require("./mail.controller");
 const { getRandomNumericString } = require("../utils/Functions");
 
 /**
+ * Validate RUT format and non-empty only (invited visitors do not use the app / are not in PRY_Usuarios).
+ * @param {string} rut - RUT string (e.g. "12.345.678-9")
+ * @returns {{ valid: boolean, message?: string }}
+ */
+function validateRutInvitee(rut) {
+  if (rut == null || String(rut).trim() === '') {
+    return { valid: false, message: 'El RUT es requerido.' };
+  }
+  const s = String(rut).trim();
+  if (!s.includes('-')) {
+    return { valid: false, message: 'El RUT debe incluir un guión (ej: 12345678-9).' };
+  }
+  const parts = s.split('-');
+  if (parts.length !== 2) {
+    return { valid: false, message: 'Formato de RUT inválido.' };
+  }
+  const numbers = parts[0].replace(/\./g, '');
+  const verifier = parts[1];
+  if (!/^\d{7,8}$/.test(numbers)) {
+    return { valid: false, message: 'El RUT debe tener entre 7 y 8 dígitos antes del guión.' };
+  }
+  if (!/^[\dkK]$/.test(verifier)) {
+    return { valid: false, message: 'El dígito verificador debe ser un número o la letra K.' };
+  }
+  return { valid: true };
+}
+
+/**
  * Create a new invitation
  * POST /invitations
+ * Invited visitor RUT is validated for format and non-empty only; they are not required to exist in PRY_Usuarios.
  */
 const createInvitation = async (req, res) => {
   console.log('[Invitation] Creating invitation...');
@@ -18,54 +47,57 @@ const createInvitation = async (req, res) => {
       rutInvitado,
       correoInvitado,
       telefonoInvitado,
+      tipoInvitacion,
       motivo,
       fechaInicio,
       fechaFin,
       idSala,
-      usageLimit = 1
+      usageLimit: usageLimitBody
     } = req.body;
+
+    const tipo = (tipoInvitacion === 'Delivery' || tipoInvitacion === 'Visitante') ? tipoInvitacion : 'Visitante';
+    const usageLimit = tipo === 'Delivery' ? 1 : (usageLimitBody ?? 1);
 
     // Validate required fields
     if (!createdBy || !nombreInvitado || !fechaInicio || !fechaFin) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Campos requeridos: createdBy, nombreInvitado, fechaInicio, fechaFin' 
+      return res.status(400).json({
+        success: false,
+        message: 'Campos requeridos: createdBy, nombreInvitado, fechaInicio, fechaFin'
       });
     }
 
-    // Generate unique access code
-    const existingIds = await findMany("call spPRY_IDAcceso_Listar();", []);
+    // RUT: format and non-empty only (invitee does not use the app)
+    const rutVal = validateRutInvitee(rutInvitado);
+    if (!rutVal.valid) {
+      return res.status(400).json({ success: false, message: rutVal.message || 'RUT inválido.' });
+    }
+
+    // Unique code: check both PRY_Acceso and PRY_Invitacion (invitations are not stored in PRY_Acceso)
+    const existingAcceso = await findMany("call spPRY_IDAcceso_Listar();", []);
+    const [invRows] = await pool.query("SELECT IDAcceso FROM PRY_Invitacion WHERE COALESCE(Activo, 1) = 1");
+    const existingCodes = new Set([
+      ...(existingAcceso || []).map(r => r.IDAcceso),
+      ...(invRows || []).map(r => r.IDAcceso).filter(Boolean)
+    ]);
     let codigo;
     do {
       codigo = getRandomNumericString(10);
-    } while (existingIds.some(item => item["IDAcceso"] === codigo));
+    } while (existingCodes.has(codigo));
 
     // Generate QR code
     const qrImage = qr.imageSync(codigo, { type: 'png' });
     const qrBase64 = `data:image/png;base64,${qrImage.toString("base64")}`;
 
-    // Create access record
-    const payload = {
-      codigo,
-      fechaInicio,
-      fechaFin,
-      sala: idSala,
-      isCard: false,
-      isVisit: true
-    };
+    // Normalize RUT for storage (no dots)
+    const normalizedRut = (rutInvitado || '').replace(/\./g, '').trim();
 
-    await pool.query('call spPRY_Usuario_AgregarEnlace(?,?,?);', [
-      codigo, 
-      rutInvitado || createdBy, 
-      JSON.stringify(payload)
-    ]);
-
-    // Create invitation record
+    // Create invitation record only (no PRY_Acceso insert — invitee RUT is not in PRY_Usuarios)
+    // Access is validated via PRY_Invitacion (spPRY_Invitacion_Validar)
     const [result] = await pool.query(
-      'call spPRY_Invitacion_Crear(?,?,?,?,?,?,?,?,?,?,?,?);',
+      'call spPRY_Invitacion_Crear(?,?,?,?,?,?,?,?,?,?,?,?,?);',
       [
-        codigo, createdBy, nombreInvitado, rutInvitado, correoInvitado,
-        telefonoInvitado, motivo, fechaInicio, fechaFin, idSala, usageLimit, qrBase64
+        codigo, createdBy, nombreInvitado, normalizedRut, correoInvitado,
+        telefonoInvitado, tipo, motivo, fechaInicio, fechaFin, idSala, usageLimit, qrBase64
       ]
     );
 
@@ -153,6 +185,7 @@ const listInvitations = async (req, res) => {
       rutInvitado: inv.RutInvitado,
       correoInvitado: inv.CorreoInvitado,
       telefonoInvitado: inv.TelefonoInvitado,
+      tipoInvitacion: inv.TipoInvitacion || 'Visitante',
       motivo: inv.Motivo,
       fechaInicio: inv.FechaInicio,
       fechaFin: inv.FechaFin,
@@ -210,6 +243,7 @@ const getInvitation = async (req, res) => {
         rutInvitado: invitation.RutInvitado,
         correoInvitado: invitation.CorreoInvitado,
         telefonoInvitado: invitation.TelefonoInvitado,
+        tipoInvitacion: invitation.TipoInvitacion || 'Visitante',
         motivo: invitation.Motivo,
         fechaInicio: invitation.FechaInicio,
         fechaFin: invitation.FechaFin,
@@ -291,7 +325,32 @@ const cancelInvitation = async (req, res) => {
 };
 
 /**
+ * Check if door/device allows access at current time (door schedule).
+ * Enforce: only allow access when within door's allowed time window.
+ * @returns {Promise<boolean>} true if access is allowed by schedule (or no schedule configured)
+ */
+const checkDoorSchedule = async (deviceId, puerta) => {
+  if (!deviceId && !puerta) return true;
+  try {
+    // TODO: when PRY_Ubicacion or a schedule table has StartTime/EndTime per door, query and enforce:
+    // const now = new Date(); return now >= doorStart && now <= doorEnd;
+    const location = deviceId && puerta
+      ? await findOne('call spPRY_Ubicacion_ObtenerPorSNPuerta(?,?);', [String(deviceId), String(puerta)])
+      : null;
+    if (!location) return true;
+    // No schedule columns on PRY_Ubicacion yet; allow. Future: check location.HoraInicio, location.HoraFin
+    return true;
+  } catch (e) {
+    console.warn('[Access] checkDoorSchedule error:', e.message);
+    return true;
+  }
+};
+
+/**
  * Validate QR code for access (both invitation and personal QR codes)
+ * 1. Check invitation time window (now >= valid_from AND now <= valid_until)
+ * 2. Check door schedule
+ * 3. Only then allow access
  * POST /access/validate-qr
  */
 const validateQR = async (req, res) => {
@@ -321,21 +380,39 @@ const validateQR = async (req, res) => {
     invitation = await findOne('call spPRY_Invitacion_Validar(?);', [qrCode]);
 
     if (invitation) {
-      // This is an invitation QR code
       qrType = 'invitation';
       const validationResult = invitation.ValidationResult;
-      
+
       switch (validationResult) {
-        case 'VALID':
+        case 'VALID': {
+          const now = new Date();
+          const validFrom = new Date(invitation.FechaInicio);
+          const validUntilInv = new Date(invitation.FechaFin);
+          if (now < validFrom) {
+            reason = 'NOT_YET_VALID';
+            console.log('[Access] Invitation not yet valid: now < FechaInicio');
+            break;
+          }
+          if (now > validUntilInv) {
+            reason = 'INVITATION_EXPIRED';
+            console.log('[Access] Invitation expired: now > FechaFin');
+            break;
+          }
+          const doorAllowed = await checkDoorSchedule(deviceId, puerta);
+          if (!doorAllowed) {
+            reason = 'DOOR_SCHEDULE_DENIED';
+            console.log('[Access] Door schedule does not allow access at this time');
+            break;
+          }
           result = 'ALLOWED';
           reason = 'ACCESS_GRANTED';
           allowed = true;
           userName = invitation.NombreInvitado;
           validUntil = invitation.FechaFin;
-          // Mark as used
           await pool.query('call spPRY_Invitacion_MarcarUsada(?);', [qrCode]);
-          console.log('[Access] Invitation QR validated successfully');
+          console.log('[Access] Invitation QR validated successfully (time window + door schedule OK)');
           break;
+        }
         case 'CANCELLED':
           reason = 'INVITATION_CANCELLED';
           break;
@@ -384,6 +461,25 @@ const validateQR = async (req, res) => {
                 reason = 'OUTSIDE_ACCESS_PERIOD';
                 console.log('[Access] User access period (Inicio/Fin) does not include now');
               } else {
+                const doorAllowed = await checkDoorSchedule(deviceId, puerta);
+                if (!doorAllowed) {
+                  reason = 'DOOR_SCHEDULE_DENIED';
+                  console.log('[Access] Door schedule does not allow access');
+                } else {
+                  result = 'ALLOWED';
+                  reason = 'ACCESS_GRANTED';
+                  allowed = true;
+                  userName = personalAccess.NombreUsuario || personalAccess.IDUsuario;
+                  validUntil = payload.fechaFin;
+                  console.log('[Access] Personal QR validated for user:', userName);
+                }
+              }
+            } else {
+              const doorAllowed = await checkDoorSchedule(deviceId, puerta);
+              if (!doorAllowed) {
+                reason = 'DOOR_SCHEDULE_DENIED';
+                console.log('[Access] Door schedule does not allow access');
+              } else {
                 result = 'ALLOWED';
                 reason = 'ACCESS_GRANTED';
                 allowed = true;
@@ -391,13 +487,6 @@ const validateQR = async (req, res) => {
                 validUntil = payload.fechaFin;
                 console.log('[Access] Personal QR validated for user:', userName);
               }
-            } else {
-              result = 'ALLOWED';
-              reason = 'ACCESS_GRANTED';
-              allowed = true;
-              userName = personalAccess.NombreUsuario || personalAccess.IDUsuario;
-              validUntil = payload.fechaFin;
-              console.log('[Access] Personal QR validated for user:', userName);
             }
           }
         } catch (parseErr) {

@@ -79,6 +79,13 @@ async function runMigration() {
       )
     `);
     console.log('  - PRY_Invitacion created/exists');
+    try {
+      await connection.query("ALTER TABLE PRY_Invitacion ADD COLUMN TipoInvitacion VARCHAR(50) DEFAULT 'Visitante' AFTER TelefonoInvitado");
+      console.log('  - PRY_Invitacion.TipoInvitacion added');
+    } catch (e) {
+      if (e.code === 'ER_DUP_FIELDNAME') console.log('  - TipoInvitacion already exists');
+      else console.log('  - TipoInvitacion:', e.message.substring(0, 50));
+    }
 
     // Create PRY_AccessEvent table
     console.log('\nStep 3: Creating PRY_AccessEvent table...');
@@ -108,13 +115,13 @@ async function runMigration() {
         sql: `CREATE PROCEDURE spPRY_Invitacion_Crear(
           IN p_IDAcceso VARCHAR(50), IN p_CreadoPor VARCHAR(50), IN p_NombreInvitado VARCHAR(255),
           IN p_RutInvitado VARCHAR(50), IN p_CorreoInvitado VARCHAR(255), IN p_TelefonoInvitado VARCHAR(20),
-          IN p_Motivo VARCHAR(500), IN p_FechaInicio DATETIME, IN p_FechaFin DATETIME,
+          IN p_TipoInvitacion VARCHAR(50), IN p_Motivo VARCHAR(500), IN p_FechaInicio DATETIME, IN p_FechaFin DATETIME,
           IN p_IDSala INT, IN p_UsageLimit INT, IN p_QRCode TEXT
         ) BEGIN
           INSERT INTO PRY_Invitacion (IDAcceso, CreadoPor, NombreInvitado, RutInvitado, CorreoInvitado,
-            TelefonoInvitado, Motivo, FechaInicio, FechaFin, IDSala, UsageLimit, QRCode)
+            TelefonoInvitado, TipoInvitacion, Motivo, FechaInicio, FechaFin, IDSala, UsageLimit, QRCode)
           VALUES (p_IDAcceso, p_CreadoPor, p_NombreInvitado, p_RutInvitado, p_CorreoInvitado,
-            p_TelefonoInvitado, p_Motivo, p_FechaInicio, p_FechaFin, p_IDSala, p_UsageLimit, p_QRCode);
+            p_TelefonoInvitado, COALESCE(p_TipoInvitacion, 'Visitante'), p_Motivo, p_FechaInicio, p_FechaFin, p_IDSala, p_UsageLimit, p_QRCode);
           SELECT LAST_INSERT_ID() AS IDInvitacion;
         END`
       },
@@ -122,7 +129,7 @@ async function runMigration() {
         name: 'spPRY_Invitacion_Listar',
         sql: `CREATE PROCEDURE spPRY_Invitacion_Listar(IN p_CreadoPor VARCHAR(50)) BEGIN
           SELECT i.IDInvitacion, i.IDAcceso, i.NombreInvitado, i.RutInvitado, i.CorreoInvitado,
-            i.TelefonoInvitado, i.Motivo, i.FechaInicio, i.FechaFin, i.IDSala, s.Sala,
+            i.TelefonoInvitado, i.TipoInvitacion, i.Motivo, i.FechaInicio, i.FechaFin, i.IDSala, s.Sala,
             i.Status, i.UsageLimit, i.UsedCount, i.QRCode, i.FechaCreacion, i.CancelledAt,
             CASE WHEN i.Status = 'CANCELLED' THEN 'CANCELLED'
               WHEN i.Status = 'USED' THEN 'USED'
